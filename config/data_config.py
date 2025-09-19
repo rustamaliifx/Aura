@@ -44,6 +44,21 @@ class DataConfig(BaseSettings):
                 'HA_response_code', 'HA_session_id', 'HA_termination_state',
                 'HA_time_to_transfer', 'HA_total_request_time', 'HA_total_sessions',
                 'HA_total_time', 'HA_user_identifier', 'HA_username', 'h_rec', 'port']
+    
+    COLUMNS_MODEL_USE = ['HA_active_connections', 'HA_backend_current_queue',
+                'HA_backend_max_queue', 'HA_backend_queue_time', 'HA_bytes_read',
+                'HA_client_ip', 'HA_client_port', 'HA_frontend_max_connections',
+                'HA_http_host', 'HA_http_method', 'HA_http_referer', 'HA_http_request',
+                'HA_http_user_agent', 'HA_queue_prio', 'HA_req_host',
+                'HA_req_normalized', 'HA_req_order', 'HA_request_queue_time',
+                'HA_response_code', 'HA_session_id', 'HA_termination_state',
+                'HA_time_to_transfer', 'HA_total_request_time', 'HA_total_sessions',
+                'HA_total_time', 'HA_user_identifier', 'HA_username', 'h_rec', 'port',
+                'year', 'month', 'day', 'hour', 'weekday', 'minute', 'second',
+                't_rec_year', 't_rec_month', 't_rec_day', 't_rec_hour', 't_rec_weekday',
+                't_rec_minute', 't_rec_second', 't_rec_cn_year', 't_rec_cn_month',
+                't_rec_cn_day', 't_rec_cn_hour', 't_rec_cn_weekday', 't_rec_cn_minute',
+                't_rec_cn_second']
 
 dataconfig = DataConfig() 
 
