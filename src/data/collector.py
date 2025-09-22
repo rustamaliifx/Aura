@@ -63,4 +63,8 @@ class ElasticsearchService:
             logger.error(f"Error fetching data: {e}")
             return 
         
+
+    async def close(self):
+        """Close the Elasticsearch client."""
+        await self.client.close()
                 

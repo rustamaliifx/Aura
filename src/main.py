@@ -1,0 +1,171 @@
+import asyncio 
+import uvicorn 
+from fastapi import FastAPI, HTTPException, BackgroundTasks 
+from fastapi.responses import JSONResponse 
+from contextlib import asynccontextmanager 
+from loguru import logger 
+import sys 
+from datetime import datetime 
+from typing import List, Dict, Optional 
+import tempfile 
+import pandas as pd 
+from config.data_config import dataconfig 
+from config.model_config import ModelConfig 
+from src.data.collector import ElasticsearchService 
+from src.data.preprocessor import DataPreprocessor 
+from src.models.anomaly_detection.anomaly_detector import AnomalyDetector
+from dotenv import load_dotenv 
+import os
+
+# Load environment variables from .env file 
+load_dotenv()
+
+ES_USERNAME = os.getenv("USERNAME")
+ES_PASSWORD = os.getenv("PASSWORD")
+
+es_service = None 
+preprocessor = None 
+anomaly_detector = None 
+last_processed_timestamp = datetime(2025, 9, 18)
+is_running = False 
+
+model_config = ModelConfig()
+
+
+@asynccontextmanager 
+async def lifespan(app: FastAPI):
+    """Manage service lifecycle"""
+    global es_service, preprocessor, anomaly_detector 
+
+    # Startup 
+    logger.info("Starting up services...")
+
+    # Initialize Elasticsearch service 
+    es_service = ElasticsearchService(
+        username = ES_USERNAME,
+        password = ES_PASSWORD 
+    )
+
+    preprocessor = DataPreprocessor(
+        scaler_path = model_config.scaler_path,
+        label_encoder_path = model_config.label_encoder_path
+    )
+
+    anomaly_detector = AnomalyDetector(
+        model_path = model_config.model_path 
+    )
+
+    logger.info("Service started Successfully.")
+    yield 
+
+    logger.info("Shutting down services...")
+    if es_service:
+        await es_service.close()
+    logger.info("Services shut down successfully.")
+
+
+# FastAPI app
+app = FastAPI(
+    title="Anomaly Detection Service",
+    description="A service to detect anomalies",
+    version="1.0.0",
+    lifespan=lifespan
+)
+@app.get("/")
+def home():
+    return {"message": "Anomaly Detection Service is running."}
+
+async def process_data():
+    global last_processed_timestamp 
+
+    try:
+        # Ensure services are initialized 
+        global es_service, preprocessor, anomaly_detector 
+        if es_service is None or preprocessor is None or anomaly_detector is None:
+            logger.error("Services are not initialized.")
+            raise RuntimeError("Services are not initialized.")
+        
+        # Fetch new data from Elasticsearch 
+        found_data = False 
+        async for new_data in es_service.fetch_data(
+            index=dataconfig.INDEX_NAME,
+            size=dataconfig.BATCH_SIZE,
+        ):
+            if new_data:
+                found_data = True 
+            if not new_data:
+                logger.info("No new data found.")
+                continue 
+
+            logger.info(f"Fetched {len(new_data)} new records from Elasticsearch.")
+
+
+            # Write batch to CSV for processing 
+            with tempfile.NamedTemporaryFile(mode='w+', suffix='.csv', delete=False) as temp:
+                df = pd.DataFrame(new_data) 
+                df.to_csv(temp.name, index=False)
+                logger.info(f"Batch written to CSV: {temp.name}")
+
+            # Preprocess data 
+            processed_data = preprocessor.preprocess(new_data)
+
+            if processed_data.empty:
+                logger.warning("No valid data after preprocessing.")
+                continue 
+
+            # Detect anomalies 
+            results = anomaly_detector.detect_anomalies(processed_data, new_data)
+
+            # Get only anomalies
+            anomalies = anomaly_detector.get_anomalies_only(results) 
+
+    except Exception as e:
+        logger.error(f"Error in processing data: {e}")
+
+
+async def continuous_data_processing():
+    """Continuously process data at defined intervals."""
+    global is_running 
+
+    while is_running:
+        try:
+            await process_data() 
+            await asyncio.sleep(dataconfig.PROCESSING_INTERVAL)
+        except Exception as e:
+            logger.error(f"Error in continuous processing: {e}")
+            await asyncio.sleep(dataconfig.PROCESSING_INTERVAL)
+
+
+@app.post("/start")
+async def start_processing(background_tasks: BackgroundTasks):
+    """Start the anomaly detection service."""
+    global is_running 
+
+    if is_running:
+        return {"message": "Service is already running."}
+    
+    is_running = True 
+    background_tasks.add_task(continuous_data_processing)
+    logger.info("Anomaly detection service started.")
+
+    return {"message": "Anomaly detection service started."}
+
+
+if __name__ == "__main__":
+    logger.remove()
+    logger.add(sys.stdout, level="INFO", format="{time} - {level} - {message}")
+
+    # Run the app with Uvicorn 
+    uvicorn.run(
+        "main:app", 
+        host=dataconfig.HOST, 
+        port=dataconfig.PORT,
+        reload=False,
+        log_level="info"
+    )
+
+
+            
+
+
+
