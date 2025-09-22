@@ -18,10 +18,14 @@ from dotenv import load_dotenv
 import os
 
 # Load environment variables from .env file 
-load_dotenv()
+load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), '..', '.env'))
 
-ES_USERNAME = os.getenv("USERNAME")
-ES_PASSWORD = os.getenv("PASSWORD")
+USERNAME = os.getenv("USERNAME")
+PASSWORD = os.getenv("PASSWORD")
+print(USERNAME, PASSWORD)
+
+if USERNAME is None or PASSWORD is None:
+    raise ValueError("Elasticsearch USERNAME and PASSWORD environment variables must be set.")
 
 es_service = None 
 preprocessor = None 
@@ -42,8 +46,8 @@ async def lifespan(app: FastAPI):
 
     # Initialize Elasticsearch service 
     es_service = ElasticsearchService(
-        username = ES_USERNAME,
-        password = ES_PASSWORD 
+        username = USERNAME,
+        password = PASSWORD 
     )
 
     preprocessor = DataPreprocessor(
