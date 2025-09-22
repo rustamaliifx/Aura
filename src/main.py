@@ -94,6 +94,7 @@ async def process_data():
         async for new_data in es_service.fetch_data(
             index=dataconfig.INDEX_NAME,
             size=dataconfig.BATCH_SIZE,
+            last_timestamp=last_processed_timestamp
         ):
             if new_data:
                 found_data = True 
