@@ -120,7 +120,13 @@ class DataPreprocessor:
     def preprocess(self, data: List[Dict]) -> pd.DataFrame:
         """Preprocess raw data into a DataFrame suitable for analysis."""
         try:
-            df = pd.DataFrame(data) 
+            df = pd.DataFrame(data)
+            df = self._drop_unnecessary_columns(df)
+            df = self._handle_missing_values(df) 
+            df = self._extract_timestamp_features(df) 
+            df = self._encode_categorical_features(df) 
+            df = self._scale_numerical_features(df) 
+            logger.info(f"Columns are preprocessing {df.columns.tolist()}") 
             cols = dataconfig.COLUMNS_TO_USE
             missing_cols = [col for col in cols if col not in df.columns]
             if missing_cols:
@@ -128,12 +134,6 @@ class DataPreprocessor:
                 return pd.DataFrame()
             # Only selected columns that exist 
             df = df[cols]
-            
-            df = self._drop_unnecessary_columns(df)
-            df = self._handle_missing_values(df) 
-            df = self._extract_timestamp_features(df) 
-            df = self._encode_categorical_features(df) 
-            df = self._scale_numerical_features(df) 
 
             return df 
         

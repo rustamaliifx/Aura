@@ -30,7 +30,7 @@ if USERNAME is None or PASSWORD is None:
 es_service = None 
 preprocessor = None 
 anomaly_detector = None 
-last_processed_timestamp = datetime(2025, 9, 18)
+last_processed_timestamp = datetime(2025, 9, 21)
 is_running = False 
 
 model_config = ModelConfig()
@@ -85,19 +85,21 @@ async def process_data():
     try:
         # Ensure services are initialized 
         global es_service, preprocessor, anomaly_detector 
+        logger.info("Processing new data batch...")
         if es_service is None or preprocessor is None or anomaly_detector is None:
             logger.error("Services are not initialized.")
             raise RuntimeError("Services are not initialized.")
         
         # Fetch new data from Elasticsearch 
         found_data = False 
+        logger.info("Fetching new data from Elasticsearch...")
         async for new_data in es_service.fetch_data(
             index=dataconfig.INDEX_NAME,
             size=dataconfig.BATCH_SIZE,
             last_timestamp=last_processed_timestamp
         ):
             if new_data:
-                found_data = True 
+                found_data = True
             if not new_data:
                 logger.info("No new data found.")
                 continue 
@@ -119,10 +121,12 @@ async def process_data():
                 continue 
 
             # Detect anomalies 
+            logger.info("Running anomaly detection...")
             results = anomaly_detector.detect_anomalies(processed_data, new_data)
+            print(results.head())
 
             # Get only anomalies
-            anomalies = anomaly_detector.get_anomalies_only(results) 
+            anomalies = anomaly_detector.get_anomalies_only(results.to_dict(orient="records")) 
 
     except Exception as e:
         logger.error(f"Error in processing data: {e}")
@@ -135,6 +139,7 @@ async def continuous_data_processing():
     while is_running:
         try:
             await process_data() 
+            logger.info("Conmpleted a processing cycle.")
             await asyncio.sleep(dataconfig.PROCESSING_INTERVAL)
         except Exception as e:
             logger.error(f"Error in continuous processing: {e}")
@@ -154,6 +159,26 @@ async def start_processing(background_tasks: BackgroundTasks):
     logger.info("Anomaly detection service started.")
 
     return {"message": "Anomaly detection service started."}
+
+@app.post('/stop')
+async def stop_processing():
+    """Stop the anomaly detection service."""
+    global is_running 
+    is_running = False 
+    logger.info("Anomaly detection service stopped.")
+    return {"message": "Anomaly detection service stopped."}
+
+@app.post('/process_manual')
+def manual_process():
+    """Manually trigger data processing."""
+    try: 
+        asyncio.create_task(process_data())
+        return {"message": "Manual data processing triggered."}
+    except Exception as e:
+        logger.error(f"Error triggering manual processing: {e}")
+        raise HTTPException(status_code=500, detail="Error triggering manual processing.")
+    
+
 
 
 if __name__ == "__main__":
