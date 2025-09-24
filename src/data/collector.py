@@ -61,10 +61,21 @@ class ElasticsearchService:
             hits = response['hits']['hits']
             while hits: 
                 batch = [hit['_source'] for hit in hits]
-                yield batch
+                all_docs.extend(batch)
+                if batch:  # Only yield non-empty batches
+                    yield batch
                 response = await self.client.scroll(scroll_id=sid, scroll='2m')
                 sid = response['_scroll_id']
                 hits = response['hits']['hits']
+
+            if all_docs: 
+                with open("fetched_data.csv", mode='w', newline='', encoding='utf-8') as csvfile:
+                    writer = csv.DictWriter(csvfile, fieldnames=all_docs[0].keys())
+                    writer.writeheader()
+                    for doc in all_docs:
+                        writer.writerow(doc)
+
+
             
         except Exception as e:
             logger.error(f"Error fetching data: {e}")

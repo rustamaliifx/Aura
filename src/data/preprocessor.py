@@ -69,7 +69,8 @@ class DataPreprocessor:
                     if col in self.label_encoders:
                         le = self.label_encoders[col] 
                         try:
-                            df[col] = le.transform(df[col].astype(str))
+                            classes = set(le.classes_)
+                            df[col] = [le.transform([v])[0] if v in le.classes_ else -1 for v in df[col].astype(str)]
                         except Exception as e:
                             logger.warning(f"Error encoding column {col}: {e}")
                             df[col] = df[col].astype(str) 
