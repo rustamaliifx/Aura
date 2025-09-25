@@ -21,6 +21,8 @@ class AnomalyDetector:
             logger.error(f"Error loading model: {e}") 
             raise ValueError("Failed to load model.")
         
+
+        
     def detect_anomalies(self, processed_data: pd.DataFrame, original_data: List[Dict]) -> pd.DataFrame:
         """Detect anomalies in the processed data and return original records with anomaly labels."""
         try: 
@@ -37,32 +39,30 @@ class AnomalyDetector:
             if missing_cols:
                 logger.error(f"Missing columns for anomaly detection: {missing_cols}")
                 return pd.DataFrame()
+            
             processed_data = processed_data[columns]
+            
+            # Get predictions and scores
             predictions = self.model.predict(processed_data)
-            original_data_df['is_anomaly'] = predictions
-            return original_data_df
-
-            anomaly_scores = self.model.decision_function(processed_data) # < dataconfig.ANOMALY_THRESHOLD 
-
-            # results = []
-            # for i, (pred, score, original_doc) in enumerate(zip(predictions, anomaly_scores, original_data)):
-            #     result = {
-            #         "original_data": original_doc, 
-            #         "is_anomaly": pred == -1, 
-            #         "anomaly_score": float(score),
-            #         "confidence": abs(float(score)),
-            #         "detection_time": datetime.now().isoformat() + "Z",
-            #         "model_version": "1.0.0"
-            #     }
-            #     results.append(result)
-
-            anomaly_count = sum(1 for r in results if r["is_anomaly"])
-            total_count = len(results)
+            anomaly_scores = self.model.decision_function(processed_data)
+            
+            # Convert predictions to boolean flags
+            # Isolation Forest: -1 = anomaly, 1 = normal
+            original_data_df['is_anomaly'] = (predictions == -1)
+            original_data_df['anomaly_score'] = anomaly_scores
+            original_data_df['confidence'] = np.abs(anomaly_scores)
+            original_data_df['detection_time'] = datetime.now().isoformat() + "Z"
+            original_data_df['model_version'] = "1.0.0"
+            
+            # Log statistics
+            anomaly_count = sum(predictions == -1)
+            total_count = len(predictions)
             if total_count > 0:
                 anomaly_percentage = (anomaly_count / total_count) * 100 
                 logger.info(f"Processed {total_count} records, "
                             f"detected {anomaly_count} anomalies ({anomaly_percentage:.2f}%).")
-            return results 
+            
+            return original_data_df 
         
         except Exception as e:
             logger.error(f"Error during anomaly detection: {e}")
@@ -71,5 +71,5 @@ class AnomalyDetector:
     
     def get_anomalies_only(self, results: List[Dict]) -> List[Dict]:
         """Filter and return only the detected anomalies from results."""
-        return [res for res in results if res["is_anomaly"]]
+        return [res for res in results if res.get("is_anomaly", False)]
 

@@ -33,6 +33,9 @@ anomaly_detector = None
 last_processed_timestamp = datetime(2025, 9, 21)
 is_running = False 
 
+# Global variable to store latest anomalies
+latest_anomalies = []
+
 model_config = ModelConfig()
 
 
@@ -125,8 +128,13 @@ async def process_data():
             results = anomaly_detector.detect_anomalies(processed_data, new_data)
             print(results.head())
 
-            # Get only anomalies
-            anomalies = anomaly_detector.get_anomalies_only(results.to_dict(orient="records")) 
+            # Store all data with anomaly flags globally for API endpoint
+            global latest_anomalies
+            latest_anomalies = results.to_dict(orient="records")
+            
+            # Count actual anomalies for logging
+            anomaly_count = len([r for r in latest_anomalies if r.get('is_anomaly', False)])
+            logger.info(f"Stored {len(latest_anomalies)} total records with {anomaly_count} anomalies for API access.") 
 
     except Exception as e:
         logger.error(f"Error in processing data: {e}")
@@ -169,14 +177,71 @@ async def stop_processing():
     return {"message": "Anomaly detection service stopped."}
 
 @app.post('/process_manual')
-def manual_process():
+async def manual_process():
     """Manually trigger data processing."""
     try: 
-        asyncio.create_task(process_data())
-        return {"message": "Manual data processing triggered."}
+        await process_data()
+        return {"message": "Manual data processing completed."}
     except Exception as e:
         logger.error(f"Error triggering manual processing: {e}")
         raise HTTPException(status_code=500, detail="Error triggering manual processing.")
+    
+
+def clean_data_for_json(data_list):
+    """Clean data to handle NaN values for JSON serialization."""
+    cleaned_data = []
+    for item in data_list:
+        if isinstance(item, dict):
+            # Replace NaN values with None (which becomes null in JSON)
+            cleaned_item = {}
+            for key, value in item.items():
+                if pd.isna(value) or (isinstance(value, float) and not pd.isna(value) and (value == float('inf') or value == float('-inf'))):
+                    cleaned_item[key] = None
+                else:
+                    cleaned_item[key] = value
+            cleaned_data.append(cleaned_item)
+        else:
+            cleaned_data.append(item)
+    return cleaned_data
+
+@app.get("/api/data")
+async def get_all_data():
+    """Return all processed data with anomaly flags."""
+    try: 
+        global latest_anomalies
+        
+        cleaned_data = clean_data_for_json(latest_anomalies)
+        anomaly_count = len([r for r in cleaned_data if r.get('is_anomaly', False)])
+        
+        return JSONResponse(content={
+            "data": cleaned_data, 
+            "timestamp": datetime.now().isoformat(),
+            "total_count": len(cleaned_data),
+            "anomaly_count": anomaly_count,
+            "normal_count": len(cleaned_data) - anomaly_count
+        })
+    except Exception as e:
+        logger.error(f"Error fetching all data: {e}")
+        raise HTTPException(status_code=500, detail="Error fetching all data")
+
+@app.get("/api/anomalies")
+async def get_latest_anomalies():
+    """Return only the anomalous data points."""
+    try: 
+        global latest_anomalies
+        
+        # Filter only anomalies
+        anomalies_only = [r for r in latest_anomalies if r.get('is_anomaly', False)]
+        cleaned_anomalies = clean_data_for_json(anomalies_only)
+        
+        return JSONResponse(content={
+            "anomalies": cleaned_anomalies, 
+            "timestamp": datetime.now().isoformat(),
+            "count": len(cleaned_anomalies)
+        })
+    except Exception as e:
+        logger.error(f"Error fetching anomalies: {e}")
+        raise HTTPException(status_code=500, detail="Error fetching anomalies")
     
 
 
