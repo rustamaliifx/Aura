@@ -11,7 +11,7 @@ import tempfile
 import pandas as pd 
 from config.data_config import dataconfig 
 from config.model_config import ModelConfig 
-from src.data.collector import ElasticsearchService 
+from src.data.persistent_collector import PersistentElasticsearchService 
 from src.data.preprocessor import DataPreprocessor 
 from src.models.anomaly_detection.anomaly_detector import AnomalyDetector
 from dotenv import load_dotenv 
@@ -48,7 +48,7 @@ async def lifespan(app: FastAPI):
     logger.info("Starting up services...")
 
     # Initialize Elasticsearch service 
-    es_service = ElasticsearchService(
+    es_service = PersistentElasticsearchService(
         username = USERNAME,
         password = PASSWORD 
     )
@@ -93,48 +93,52 @@ async def process_data():
             logger.error("Services are not initialized.")
             raise RuntimeError("Services are not initialized.")
         
-        # Fetch new data from Elasticsearch 
-        found_data = False 
-        logger.info("Fetching new data from Elasticsearch...")
-        async for new_data in es_service.fetch_data(
-            index=dataconfig.INDEX_NAME,
-            size=dataconfig.BATCH_SIZE,
-            last_timestamp=last_processed_timestamp
-        ):
-            if new_data:
-                found_data = True
-            if not new_data:
-                logger.info("No new data found.")
-                continue 
-
-            logger.info(f"Fetched {len(new_data)} new records from Elasticsearch.")
-
-
-            # Write batch to CSV for processing 
-            with tempfile.NamedTemporaryFile(mode='w+', suffix='.csv', delete=False) as temp:
-                df = pd.DataFrame(new_data) 
-                df.to_csv(temp.name, index=False)
-                logger.info(f"Batch written to CSV: {temp.name}")
-
-            # Preprocess data 
-            processed_data = preprocessor.preprocess(new_data)
-
-            if processed_data.empty:
-                logger.warning("No valid data after preprocessing.")
-                continue 
-
-            # Detect anomalies 
-            logger.info("Running anomaly detection...")
-            results = anomaly_detector.detect_anomalies(processed_data, new_data)
-            print(results.head())
-
-            # Store all data with anomaly flags globally for API endpoint
-            global latest_anomalies
-            latest_anomalies = results.to_dict(orient="records")
+        # Sync new data from Elasticsearch 
+        logger.info("Syncing data from Elasticsearch...")
+        sync_result = await es_service.sync_data()
+        logger.info(f"Sync completed: {sync_result}")
+        
+        # Load recent data for processing
+        new_data_df = es_service.load_recent_data(hours=1)  # Load last 1 hour of data
+        
+        if new_data_df.empty:
+            logger.info("No new data found.")
+            return
             
-            # Count actual anomalies for logging
-            anomaly_count = len([r for r in latest_anomalies if r.get('is_anomaly', False)])
-            logger.info(f"Stored {len(latest_anomalies)} total records with {anomaly_count} anomalies for API access.") 
+        # Convert DataFrame to list of dictionaries for processing
+        new_data = new_data_df.to_dict(orient='records')
+        
+        logger.info(f"Processing {len(new_data)} records from local database.")
+
+        if not new_data:
+            logger.info("No data to process.")
+            return
+
+        # Write batch to CSV for processing 
+        with tempfile.NamedTemporaryFile(mode='w+', suffix='.csv', delete=False) as temp:
+            df = pd.DataFrame(new_data) 
+            df.to_csv(temp.name, index=False)
+            logger.info(f"Batch written to CSV: {temp.name}")
+
+        # Preprocess data 
+        processed_data = preprocessor.preprocess(new_data)
+
+        if processed_data.empty:
+            logger.warning("No valid data after preprocessing.")
+            return
+
+        # Detect anomalies 
+        logger.info("Running anomaly detection...")
+        results = anomaly_detector.detect_anomalies(processed_data, new_data)
+        print(results.head())
+
+        # Store all data with anomaly flags globally for API endpoint
+        global latest_anomalies
+        latest_anomalies = results.to_dict(orient="records")
+        
+        # Count actual anomalies for logging
+        anomaly_count = len([r for r in latest_anomalies if r.get('is_anomaly', False)])
+        logger.info(f"Stored {len(latest_anomalies)} total records with {anomaly_count} anomalies for API access.") 
 
     except Exception as e:
         logger.error(f"Error in processing data: {e}")
