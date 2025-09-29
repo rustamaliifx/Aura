@@ -11,26 +11,28 @@ import tempfile
 import pandas as pd 
 from config.data_config import dataconfig 
 from config.model_config import ModelConfig 
-from src.data.persistent_collector import PersistentElasticsearchService 
 from src.data.preprocessor import DataPreprocessor 
 from src.models.anomaly_detection.anomaly_detector import AnomalyDetector
 from dotenv import load_dotenv 
 import os
+from src.data.hybrid_collector import HybridElasticsearchService
 
 # Load environment variables from .env file 
 load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), '..', '.env'))
 
 USERNAME = os.getenv("USERNAME")
 PASSWORD = os.getenv("PASSWORD")
-print(USERNAME, PASSWORD)
 
-if USERNAME is None or PASSWORD is None:
-    raise ValueError("Elasticsearch USERNAME and PASSWORD environment variables must be set.")
+# Debug print (remove in production)
+logger.info(f"Loaded credentials - Username: {'SET' if USERNAME else 'NOT SET'}, Password: {'SET' if PASSWORD else 'NOT SET'}")
+
+if not USERNAME or not PASSWORD:
+    raise ValueError("Elasticsearch USERNAME and PASSWORD environment variables must be set in .env file")
 
 es_service = None 
 preprocessor = None 
 anomaly_detector = None 
-last_processed_timestamp = datetime(2025, 9, 21)
+last_processed_timestamp = dataconfig.LAST_PROCESSED_TIMESTAMP
 is_running = False 
 
 # Global variable to store latest anomalies
@@ -48,9 +50,9 @@ async def lifespan(app: FastAPI):
     logger.info("Starting up services...")
 
     # Initialize Elasticsearch service 
-    es_service = PersistentElasticsearchService(
-        username = USERNAME,
-        password = PASSWORD 
+    es_service = HybridElasticsearchService(
+        username=USERNAME,  # type: ignore (already validated above)
+        password=PASSWORD   # type: ignore (already validated above)
     )
 
     preprocessor = DataPreprocessor(
@@ -66,8 +68,7 @@ async def lifespan(app: FastAPI):
     yield 
 
     logger.info("Shutting down services...")
-    if es_service:
-        await es_service.close()
+    # HybridElasticsearchService doesn't have a close method
     logger.info("Services shut down successfully.")
 
 
@@ -80,7 +81,38 @@ app = FastAPI(
 )
 @app.get("/")
 def home():
-    return {"message": "Anomaly Detection Service is running."}
+    return {"message": "Anomaly Detection Service is running with Hybrid Elasticsearch Collector."}
+
+@app.post("/api/initialize")
+async def initialize_data():
+    """Initialize the system with historical data if database is empty."""
+    try:
+        global es_service
+        
+        if es_service is None:
+            raise HTTPException(status_code=500, detail="Service not initialized")
+        
+        current_count = es_service.get_data_count()
+        
+        if current_count > 0:
+            return JSONResponse(content={
+                "message": f"Database already contains {current_count} records. Use /api/bulk-sync for additional data.",
+                "current_records": current_count
+            })
+        
+        # First time setup - fetch recent historical data
+        logger.info("Initializing with historical data...")
+        sync_result = await es_service.incremental_fetch()
+        
+        return JSONResponse(content={
+            "message": "System initialized successfully",
+            "sync_result": sync_result,
+            "records_loaded": sync_result.get("new_records", 0)
+        })
+        
+    except Exception as e:
+        logger.error(f"Error initializing system: {e}")
+        raise HTTPException(status_code=500, detail=f"Error initializing system: {str(e)}")
 
 async def process_data():
     global last_processed_timestamp 
@@ -93,9 +125,9 @@ async def process_data():
             logger.error("Services are not initialized.")
             raise RuntimeError("Services are not initialized.")
         
-        # Sync new data from Elasticsearch 
+        # Sync new data from Elasticsearch using hybrid collector
         logger.info("Syncing data from Elasticsearch...")
-        sync_result = await es_service.sync_data()
+        sync_result = await es_service.incremental_fetch()
         logger.info(f"Sync completed: {sync_result}")
         
         # Load recent data for processing
@@ -246,6 +278,95 @@ async def get_latest_anomalies():
     except Exception as e:
         logger.error(f"Error fetching anomalies: {e}")
         raise HTTPException(status_code=500, detail="Error fetching anomalies")
+
+@app.get("/api/status")
+async def get_service_status():
+    """Get service status and database information."""
+    try:
+        global es_service, is_running
+        
+        if es_service is None:
+            return JSONResponse(content={
+                "service_running": False,
+                "error": "Service not initialized"
+            })
+        
+        total_records = es_service.get_data_count()
+        last_fetch = es_service.get_last_fetch_timestamp()
+        
+        return JSONResponse(content={
+            "service_running": is_running,
+            "total_records": total_records,
+            "last_fetch_timestamp": last_fetch.isoformat() if last_fetch else None,
+            "database_path": str(es_service.db_path),
+            "timestamp": datetime.now().isoformat()
+        })
+    except Exception as e:
+        logger.error(f"Error getting service status: {e}")
+        raise HTTPException(status_code=500, detail="Error getting service status")
+
+@app.post("/api/bulk-sync")
+async def trigger_bulk_sync(start_date: str, end_date: Optional[str] = None, max_workers: int = 4):
+    """Trigger bulk parallel data synchronization for historical data."""
+    try:
+        global es_service
+        
+        if es_service is None:
+            raise HTTPException(status_code=500, detail="Service not initialized")
+        
+        # Parse dates
+        start_dt = datetime.fromisoformat(start_date.replace('Z', '+00:00'))
+        end_dt = datetime.now() if end_date is None else datetime.fromisoformat(end_date.replace('Z', '+00:00'))
+        
+        logger.info(f"Starting bulk sync from {start_dt} to {end_dt} with {max_workers} workers")
+        
+        # Run bulk parallel fetch
+        sync_result = await es_service.bulk_parallel_fetch(start_dt, end_dt, max_workers)
+        
+        return JSONResponse(content={
+            "success": True,
+            "sync_result": sync_result,
+            "message": f"Bulk sync completed. Processed {sync_result['new_records']} new records"
+        })
+        
+    except Exception as e:
+        logger.error(f"Error in bulk sync: {e}")
+        raise HTTPException(status_code=500, detail=f"Error in bulk sync: {str(e)}")
+
+@app.get("/api/recent-data")
+async def get_recent_raw_data(hours: int = 1):
+    """Get recent raw data from database without anomaly detection."""
+    try:
+        global es_service
+        
+        if es_service is None:
+            raise HTTPException(status_code=500, detail="Service not initialized")
+        
+        # Load recent data
+        recent_df = es_service.load_recent_data(hours=hours)
+        
+        if recent_df.empty:
+            return JSONResponse(content={
+                "data": [],
+                "count": 0,
+                "hours": hours,
+                "message": "No recent data found"
+            })
+        
+        # Convert to records and clean for JSON
+        recent_data = recent_df.to_dict(orient='records')
+        cleaned_data = clean_data_for_json(recent_data)
+        
+        return JSONResponse(content={
+            "data": cleaned_data,
+            "count": len(cleaned_data),
+            "hours": hours,
+            "timestamp": datetime.now().isoformat()
+        })
+        
+    except Exception as e:
+        logger.error(f"Error fetching recent data: {e}")
+        raise HTTPException(status_code=500, detail="Error fetching recent data")
     
 
 
@@ -254,6 +375,19 @@ if __name__ == "__main__":
     logger.remove()
     logger.add(sys.stdout, level="INFO", format="{time} - {level} - {message}")
 
+    logger.info("Starting Anomaly Detection Service with Hybrid Elasticsearch Collector...")
+    logger.info(f"Server will run on http://{dataconfig.HOST}:{dataconfig.PORT}")
+    logger.info("Available endpoints:")
+    logger.info("  GET  /                     - Service status")
+    logger.info("  POST /api/initialize       - Initialize with historical data")
+    logger.info("  POST /start                - Start continuous processing")
+    logger.info("  POST /stop                 - Stop processing")
+    logger.info("  GET  /api/status           - Get service and database status")
+    logger.info("  GET  /api/data             - Get all processed data with anomalies")
+    logger.info("  GET  /api/anomalies        - Get only anomalous data points")
+    logger.info("  GET  /api/recent-data      - Get recent raw data")
+    logger.info("  POST /api/bulk-sync        - Trigger bulk historical sync")
+    
     # Run the app with Uvicorn 
     uvicorn.run(
         "main:app", 

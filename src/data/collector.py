@@ -44,6 +44,10 @@ class ElasticsearchService:
 
     async def fetch_data(self, index: str, size: int = 100, last_timestamp: Optional[datetime] = None) -> AsyncGenerator[List[Any], None]:
         """Fetch data from Elasticsearch index and return batches as lists."""
+        # Record initial fetch start time
+        fetch_start_time = time.time()
+        logger.info(f"Starting data fetch at {time.ctime()}")
+        
         if last_timestamp is None:
             last_timestamp = datetime.now() - timedelta(days=30)  # Default to last 30 days
         start_time = last_timestamp.strftime("%Y-%m-%dT%H:%M:%SZ")
